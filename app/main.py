@@ -22,8 +22,10 @@ app = FastAPI(title="The Guild API", version="0.1.0")
 # --- CORS (Cross-Origin Resource Sharing) Middleware ---
 # This allows our frontend (running on http://localhost:3000)
 # to communicate with our backend API.
+# This is the corrected list
 origins = [
     "http://localhost:3000",
+    "https://the-guild-frontend.vercel.app",
 ]
 
 app.add_middleware(
