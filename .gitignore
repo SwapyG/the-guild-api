@@ -1,0 +1,21 @@
+# --- SECRETS ---
+# Absolutely DO NOT commit your environment variables file.
+.env
+
+# --- VIRTUAL ENVIRONMENT ---
+# Ignore the virtual environment folder.
+venv/
+.venv/
+
+# --- PYTHON CACHE ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- IDE / EDITOR ---
+.idea/
+.vscode/
+
+# --- MACOS ---
+.DS_Store
