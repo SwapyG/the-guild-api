@@ -16,13 +16,8 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI(title="The Guild API", version="0.1.0")
 
 # --- CORS Configuration with Regex ---
-allowed_origins_regex = re.compile(r"https:\/\/the-guild-frontend.*\.vercel\.app")
-
-origins = [
-    "http://localhost:3000",
-    allowed_origins_regex,
-]
-# -----------------------------------------------
+origins = ["*"]
+# ------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
