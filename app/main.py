@@ -11,6 +11,19 @@ import uuid
 from . import models, schemas
 from .database import SessionLocal, engine, get_db
 
+
+print("--- APPLICATION BOOT SEQUENCE STARTED ---")  # <-- ADD THIS LINE
+
+# This command ensures that all of the tables...
+models.Base.metadata.create_all(bind=engine)
+
+print("--- DATABASE TABLES CHECKED/CREATED ---")  # <-- ADD THIS LINE
+
+# Initialize the FastAPI app
+app = FastAPI(title="The Guild API", version="0.1.0")
+
+print("--- FASTAPI APP INITIALIZED ---")  # <-- ADD THIS LINE
+
 # This command ensures that all of the tables defined in models.py
 # are created in the database when the application starts.
 # For a real production app, you might use a migration tool like Alembic.
