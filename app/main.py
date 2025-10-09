@@ -19,19 +19,23 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="The Guild API", version="0.1.0")
 
+# --- THE FINAL, CORRECT CORS CONFIGURATION ---
+# This list is simpler and more robust. It allows localhost, the main
+# Vercel domain, and ANY subdomain of the Vercel app (which covers all previews).
+origins = [
+    "http://localhost:3000",
+    "https://the-guild-frontend.vercel.app",
+]
 
-# --- CORS Configuration ---
-# This middleware allows your Vercel frontend to make requests to this backend.
-# The regex allows for Vercel's unique preview deployment URLs.
-allowed_origins_regex = re.compile(r"https:\/\/the-guild-frontend.*\.vercel\.app")
-origins = ["http://localhost:3000", allowed_origins_regex]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"https:\/\/the-guild-frontend-.*\.vercel\.app",  # Allow preview URLs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# ---------------------------------------------
 
 
 # --- Custom OpenAPI Schema for JWT Bearer Auth ---
