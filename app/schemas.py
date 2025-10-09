@@ -1,17 +1,13 @@
-# schemas.py
+# app/schemas.py (Updated for Authentication)
 
 import uuid
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel
 
-# Import the enums from our models file to be used in the schemas
 from .models import SkillProficiencyEnum, MissionStatusEnum, PitchStatusEnum
 
 
-# This Config class is used by Pydantic to configure its behavior.
-# `from_attributes = True` tells Pydantic to read the data even if it is not a dict,
-# but an ORM model (or any other arbitrary object with attributes).
 class Config:
     from_attributes = True
 
@@ -34,7 +30,7 @@ class Skill(SkillBase):
         pass
 
 
-# ------------------- User Schemas -------------------
+# ------------------- User Schemas (UPDATED) -------------------
 
 
 class UserBase(BaseModel):
@@ -45,10 +41,15 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    pass
+    # This schema is used when creating a new user (e.g., registration).
+    # It includes the password field.
+    password: str
 
 
 class User(UserBase):
+    # This is the public-facing user schema.
+    # Notice it inherits from UserBase and does NOT include the password.
+    # This ensures we never accidentally send a password hash to the client.
     id: uuid.UUID
 
     class Config(Config):
@@ -56,7 +57,6 @@ class User(UserBase):
 
 
 # ------------------- MissionRole Schemas -------------------
-# We define MissionRole schemas before Mission so they can be nested.
 
 
 class MissionRoleBase(BaseModel):
@@ -70,7 +70,6 @@ class MissionRoleCreate(MissionRoleBase):
 
 
 class MissionRoleUpdate(BaseModel):
-    # This schema is specifically for the "drafting" feature
     assignee_user_id: uuid.UUID
 
 
@@ -78,7 +77,7 @@ class MissionRole(MissionRoleBase):
     id: uuid.UUID
     mission_id: uuid.UUID
     assignee: Optional[User] = None
-    required_skill: Skill  # <-- ADD THIS LINE
+    required_skill: Skill
 
     class Config(Config):
         pass
@@ -90,20 +89,20 @@ class MissionRole(MissionRoleBase):
 class MissionBase(BaseModel):
     title: str
     description: Optional[str] = None
-    lead_user_id: uuid.UUID
     status: MissionStatusEnum = MissionStatusEnum.Proposed
 
 
 class MissionCreate(MissionBase):
-    # We can add a list of roles to be created at the same time as the mission
+    # lead_user_id is NOT here because it's determined by the token
     roles: List[MissionRoleBase] = []
 
 
 class Mission(MissionBase):
     id: uuid.UUID
     created_at: datetime
-    lead: User  # Nested User schema for the lead
-    roles: List[MissionRole] = []  # Nested list of MissionRole schemas
+    lead: User
+    lead_user_id: uuid.UUID  # It IS here for reading data
+    roles: List[MissionRole] = []
 
     class Config(Config):
         pass
@@ -117,7 +116,7 @@ class MissionPitchBase(BaseModel):
 
 
 class MissionPitchCreate(MissionPitchBase):
-    user_id: uuid.UUID  # The user ID will be provided from the request context
+    user_id: uuid.UUID
 
 
 class MissionPitch(MissionPitchBase):
@@ -125,7 +124,23 @@ class MissionPitch(MissionPitchBase):
     mission_id: uuid.UUID
     user_id: uuid.UUID
     status: PitchStatusEnum
-    user: User  # Nested User schema for the pitcher
+    user: User
 
     class Config(Config):
         pass
+
+
+# ------------------- NEW: Token Schemas -------------------
+# These schemas define the shape of the JWT and its payload.
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class TokenData(BaseModel):
+    email: Optional[str] = None
+
+
+# --------------------------------------------------------

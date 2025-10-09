@@ -1,19 +1,15 @@
-# models.py (Corrected)
+# app/models.py (Updated for Authentication)
 
 import enum
 import uuid
-
-# Import TIMESTAMP from the main sqlalchemy module
 from sqlalchemy import Column, String, Text, ForeignKey, Enum, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
-# Import the Base from our database file. All models will inherit from this.
 from .database import Base
 
 
-# Define Python enums that correspond to our PostgreSQL ENUM types.
 class SkillProficiencyEnum(str, enum.Enum):
     Beginner = "Beginner"
     Intermediate = "Intermediate"
@@ -33,9 +29,6 @@ class PitchStatusEnum(str, enum.Enum):
     Rejected = "Rejected"
 
 
-# ------------------- SQLAlchemy ORM Models -------------------
-
-
 class User(Base):
     __tablename__ = "users"
 
@@ -44,7 +37,11 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     photo_url = Column(String(2048))
     title = Column(String(255), nullable=False)
-    # Use TIMESTAMP(timezone=True) instead of TIMESTAMPTZ
+
+    # --- THIS IS THE NEWLY ADDED LINE ---
+    hashed_password = Column(String(255), nullable=True)
+    # ------------------------------------
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()
