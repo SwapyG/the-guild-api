@@ -1,10 +1,9 @@
-# app/main.py (FINAL, FINAL, CORRECTED VERSION)
+# app/main.py
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.openapi.utils import get_openapi
-
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from typing import List
@@ -14,12 +13,16 @@ import re
 from . import models, schemas, auth
 from .database import get_db, engine
 
+# This line ensures that SQLAlchemy creates the database tables based on your models
+# if they don't already exist.
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="The Guild API", version="0.1.0")
 
 
 # --- CORS Configuration ---
+# This middleware allows your Vercel frontend to make requests to this backend.
+# The regex allows for Vercel's unique preview deployment URLs.
 allowed_origins_regex = re.compile(r"https:\/\/the-guild-frontend.*\.vercel\.app")
 origins = ["http://localhost:3000", allowed_origins_regex]
 app.add_middleware(
@@ -32,6 +35,8 @@ app.add_middleware(
 
 
 # --- Custom OpenAPI Schema for JWT Bearer Auth ---
+# This function overrides FastAPI's default documentation generation to
+# ensure the "Authorize" button uses a simple Bearer Token input.
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -48,14 +53,11 @@ def custom_openapi():
             "bearerFormat": "JWT",
         }
     }
-    # This is a key part that was missing a clean implementation:
-    # We must define the security requirement for the paths that need it.
     security_requirement = {"BearerAuth": []}
-
     paths = openapi_schema["paths"]
     for path in paths:
         for method in paths[path]:
-            # If the endpoint is tagged for auth, apply the security scheme
+            # If an endpoint has the "security" tag, apply the BearerAuth scheme
             if "security" in paths[path][method].get("tags", []):
                 paths[path][method]["security"] = [security_requirement]
 
@@ -73,10 +75,11 @@ app.openapi = custom_openapi
     tags=["Authentication"],
 )
 def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    # ... (code is correct)
+    """Handles new user registration."""
     db_user = db.query(models.User).filter(models.User.email == user.email).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
+
     hashed_password = auth.get_password_hash(user.password)
     db_user = models.User(
         email=user.email,
@@ -95,7 +98,7 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)
 ):
-    # ... (code is correct)
+    """Handles user login and issues a JWT access token."""
     user = auth.get_user(db, email=form_data.username)
     if (
         not user
@@ -117,19 +120,56 @@ def read_root():
     return {"message": "Welcome to The Guild API"}
 
 
+# --- User Endpoints ---
 @app.get("/users/", response_model=List[schemas.User], tags=["Public"])
 def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """Retrieves a list of all users (public information only)."""
     return db.query(models.User).offset(skip).limit(limit).all()
 
 
+# --- THIS IS THE NEW ENDPOINT ---
+@app.get("/users/me", response_model=schemas.User, tags=["Users", "security"])
+def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
+    """
+    Get the profile for the currently authenticated user.
+    The `get_current_user` dependency handles token validation.
+    """
+    return current_user
+
+
+# -------------------------------
+
+
+# --- Skill Endpoints ---
 @app.get("/skills/", response_model=List[schemas.Skill], tags=["Public"])
 def read_skills(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """Retrieves a list of all available skills."""
     return db.query(models.Skill).offset(skip).limit(limit).all()
 
 
+@app.post(
+    "/skills/",
+    response_model=schemas.Skill,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Skills", "security"],
+)
+def create_skill(
+    skill: schemas.SkillCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Creates a new skill (requires authentication)."""
+    db_skill = models.Skill(**skill.model_dump())
+    db.add(db_skill)
+    db.commit()
+    db.refresh(db_skill)
+    return db_skill
+
+
+# --- Mission Endpoints ---
 @app.get("/missions/", response_model=List[schemas.Mission], tags=["Public"])
 def read_missions(db: Session = Depends(get_db)):
-    # ... (code is correct)
+    """Retrieves a list of all missions with their lead and roles."""
     return (
         db.query(models.Mission)
         .options(
@@ -145,7 +185,7 @@ def read_missions(db: Session = Depends(get_db)):
 
 @app.get("/missions/{mission_id}", response_model=schemas.Mission, tags=["Public"])
 def read_mission(mission_id: uuid.UUID, db: Session = Depends(get_db)):
-    # ... (code is correct)
+    """Retrieves the full details for a single mission."""
     mission = (
         db.query(models.Mission)
         .options(
@@ -163,41 +203,6 @@ def read_mission(mission_id: uuid.UUID, db: Session = Depends(get_db)):
     return mission
 
 
-@app.get(
-    "/missions/{mission_id}/pitches",
-    response_model=List[schemas.MissionPitch],
-    tags=["Public"],
-)
-def read_pitches_for_mission(mission_id: uuid.UUID, db: Session = Depends(get_db)):
-    # ... (code is correct)
-    return (
-        db.query(models.MissionPitch)
-        .options(joinedload(models.MissionPitch.user))
-        .filter(models.MissionPitch.mission_id == mission_id)
-        .all()
-    )
-
-
-# --- Secured Endpoints ---
-# We use a special "security" tag to mark them for the openapi function
-@app.post(
-    "/skills/",
-    response_model=schemas.Skill,
-    status_code=status.HTTP_201_CREATED,
-    tags=["Skills", "security"],
-)
-def create_skill(
-    skill: schemas.SkillCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    db_skill = models.Skill(**skill.model_dump())
-    db.add(db_skill)
-    db.commit()
-    db.refresh(db_skill)
-    return db_skill
-
-
 @app.post(
     "/missions/",
     response_model=schemas.Mission,
@@ -209,9 +214,8 @@ def create_mission(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    # THE ONLY CHANGE IS ON THE NEXT LINE
+    """Creates a new mission, assigning the current user as the lead (requires authentication)."""
     mission_data = mission.model_dump(exclude={"roles"})
-
     db_mission = models.Mission(**mission_data, lead_user_id=current_user.id)
     for role_data in mission.roles:
         db_role = models.MissionRole(**role_data.model_dump(), mission=db_mission)
@@ -220,6 +224,22 @@ def create_mission(
     db.commit()
     db.refresh(db_mission)
     return db_mission
+
+
+# --- Core Workflow Endpoints ---
+@app.get(
+    "/missions/{mission_id}/pitches",
+    response_model=List[schemas.MissionPitch],
+    tags=["Public"],
+)
+def read_pitches_for_mission(mission_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Retrieves all pitches for a specific mission."""
+    return (
+        db.query(models.MissionPitch)
+        .options(joinedload(models.MissionPitch.user))
+        .filter(models.MissionPitch.mission_id == mission_id)
+        .all()
+    )
 
 
 @app.post(
@@ -233,6 +253,7 @@ def draft_user_for_role(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
+    """Drafts a user to a mission role (requires authentication)."""
     db_role = (
         db.query(models.MissionRole).filter(models.MissionRole.id == role_id).first()
     )
@@ -263,7 +284,7 @@ def pitch_for_mission(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    # ... (code is correct)
+    """Submits a pitch for a mission as the current user (requires authentication)."""
     db_mission = (
         db.query(models.Mission).filter(models.Mission.id == mission_id).first()
     )
