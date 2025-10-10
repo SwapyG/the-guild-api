@@ -1,11 +1,17 @@
-# app/schemas.py (Updated for Authentication)
+# app/schemas.py (Updated for RBAC)
 
 import uuid
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel
 
-from .models import SkillProficiencyEnum, MissionStatusEnum, PitchStatusEnum
+# --- 1. Import the new UserRoleEnum ---
+from .models import (
+    SkillProficiencyEnum,
+    MissionStatusEnum,
+    PitchStatusEnum,
+    UserRoleEnum,
+)
 
 
 class Config:
@@ -41,16 +47,13 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    # This schema is used when creating a new user (e.g., registration).
-    # It includes the password field.
     password: str
 
 
 class User(UserBase):
-    # This is the public-facing user schema.
-    # Notice it inherits from UserBase and does NOT include the password.
-    # This ensures we never accidentally send a password hash to the client.
     id: uuid.UUID
+    # --- 2. Add the role field to the User read schema ---
+    role: UserRoleEnum
 
     class Config(Config):
         pass
@@ -93,7 +96,6 @@ class MissionBase(BaseModel):
 
 
 class MissionCreate(MissionBase):
-    # lead_user_id is NOT here because it's determined by the token
     roles: List[MissionRoleBase] = []
 
 
@@ -101,7 +103,7 @@ class Mission(MissionBase):
     id: uuid.UUID
     created_at: datetime
     lead: User
-    lead_user_id: uuid.UUID  # It IS here for reading data
+    lead_user_id: uuid.UUID
     roles: List[MissionRole] = []
 
     class Config(Config):
@@ -130,8 +132,7 @@ class MissionPitch(MissionPitchBase):
         pass
 
 
-# ------------------- NEW: Token Schemas -------------------
-# These schemas define the shape of the JWT and its payload.
+# ------------------- Token Schemas (UPDATED) -------------------
 
 
 class Token(BaseModel):
@@ -141,6 +142,8 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     email: Optional[str] = None
+    # --- 3. Add role to the token payload data ---
+    role: Optional[UserRoleEnum] = None
 
 
 # --------------------------------------------------------

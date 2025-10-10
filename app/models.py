@@ -1,4 +1,4 @@
-# app/models.py (Updated for Authentication)
+# app/models.py
 
 import enum
 import uuid
@@ -8,6 +8,16 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from .database import Base
+
+
+# --- NEW: UserRoleEnum for RBAC ---
+class UserRoleEnum(str, enum.Enum):
+    Member = "Member"
+    Manager = "Manager"
+    Admin = "Admin"
+
+
+# ------------------------------------
 
 
 class SkillProficiencyEnum(str, enum.Enum):
@@ -37,10 +47,15 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     photo_url = Column(String(2048))
     title = Column(String(255), nullable=False)
-
-    # --- THIS IS THE NEWLY ADDED LINE ---
     hashed_password = Column(String(255), nullable=True)
-    # ------------------------------------
+
+    # --- THIS IS THE NEWLY ADDED ROLE COLUMN ---
+    role = Column(
+        Enum(UserRoleEnum, name="user_role"),
+        nullable=False,
+        server_default=UserRoleEnum.Member.value,
+    )
+    # -------------------------------------------
 
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at = Column(

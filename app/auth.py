@@ -1,4 +1,4 @@
-# app/auth.py
+# app/auth.py (Upgraded for RBAC)
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -12,29 +12,23 @@ from . import schemas, models
 from .database import get_db
 from .config import settings
 
-# --- Security Configuration ---
+# --- Security Configuration (No changes here) ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# This is the dependency that our get_current_user function will use.
-# It tells FastAPI how to find the token in a request.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 
-# --- Core Auth Functions ---
+# --- Core Auth Functions (One key change in create_access_token) ---
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifies a plain-text password against a hashed one."""
     return pwd_context.verify(plain_password, hashed_password)
 
 
 def get_password_hash(password: str) -> str:
-    """Hashes a plain-text password."""
     return pwd_context.hash(password)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Creates a new JWT access token."""
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
@@ -52,19 +46,18 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 
 def get_user(db: Session, email: str) -> Optional[models.User]:
-    """Fetches a user from the database by their email."""
     return db.query(models.User).filter(models.User.email == email).first()
 
 
-# --- Dependency to Get Current User from Token ---
+# --- RBAC Security Dependencies ---
 
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
 ) -> models.User:
     """
-    A dependency for protected endpoints. It decodes the JWT from the request's
-    Authorization header, validates it, and returns the corresponding user from the database.
+    Decodes the token, validates the user, and returns the user object.
+    This is the base dependency for all authenticated users.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -76,9 +69,10 @@ async def get_current_user(
             token, settings.secret_key, algorithms=[settings.algorithm]
         )
         email: Optional[str] = payload.get("sub")
-        if email is None:
+        role: Optional[str] = payload.get("role")  # <-- 1. Extract role from token
+        if email is None or role is None:
             raise credentials_exception
-        token_data = schemas.TokenData(email=email)
+        token_data = schemas.TokenData(email=email, role=role)
     except JWTError:
         raise credentials_exception
 
@@ -86,3 +80,40 @@ async def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+
+
+# --- NEW: Stricter Dependencies for Specific Roles ---
+async def get_current_manager_user(
+    current_user: models.User = Depends(get_current_user),
+) -> models.User:
+    """
+    Dependency that ensures the user is a 'Manager' or 'Admin'.
+    Raises a 403 Forbidden error if they are just a 'Member'.
+    """
+    if current_user.role not in [
+        models.UserRoleEnum.Manager,
+        models.UserRoleEnum.Admin,
+    ]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Operation not permitted. Requires Manager or Admin role.",
+        )
+    return current_user
+
+
+async def get_current_admin_user(
+    current_user: models.User = Depends(get_current_user),
+) -> models.User:
+    """
+    The strictest dependency. Ensures the user is an 'Admin'.
+    Raises a 403 Forbidden error otherwise.
+    """
+    if current_user.role != models.UserRoleEnum.Admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Operation not permitted. Requires Admin role.",
+        )
+    return current_user
+
+
+# --------------------------------------------------------
