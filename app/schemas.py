@@ -1,11 +1,10 @@
-# app/schemas.py (Updated for RBAC)
+# app/schemas.py (FINAL, COMPLETE VERSION)
 
 import uuid
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel
 
-# --- 1. Import the new UserRoleEnum ---
 from .models import (
     SkillProficiencyEnum,
     MissionStatusEnum,
@@ -36,7 +35,7 @@ class Skill(SkillBase):
         pass
 
 
-# ------------------- User Schemas (UPDATED) -------------------
+# ------------------- User Schemas -------------------
 
 
 class UserBase(BaseModel):
@@ -52,7 +51,6 @@ class UserCreate(UserBase):
 
 class User(UserBase):
     id: uuid.UUID
-    # --- 2. Add the role field to the User read schema ---
     role: UserRoleEnum
 
     class Config(Config):
@@ -99,6 +97,14 @@ class MissionCreate(MissionBase):
     roles: List[MissionRoleBase] = []
 
 
+# --- THIS IS THE NEWLY ADDED SCHEMA FOR DRAG-AND-DROP ---
+class MissionUpdateStatus(BaseModel):
+    status: MissionStatusEnum
+
+
+# ----------------------------------------------------
+
+
 class Mission(MissionBase):
     id: uuid.UUID
     created_at: datetime
@@ -132,7 +138,7 @@ class MissionPitch(MissionPitchBase):
         pass
 
 
-# ------------------- Token Schemas (UPDATED) -------------------
+# ------------------- Token Schemas -------------------
 
 
 class Token(BaseModel):
@@ -142,8 +148,4 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     email: Optional[str] = None
-    # --- 3. Add role to the token payload data ---
     role: Optional[UserRoleEnum] = None
-
-
-# --------------------------------------------------------

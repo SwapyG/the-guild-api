@@ -1,6 +1,6 @@
-# app/main.py (FINAL RBAC VERSION)
+# app/main.py (Complete, with PATCH endpoint)
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.openapi.utils import get_openapi
@@ -19,15 +19,15 @@ app = FastAPI(title="The Guild API", version="0.1.0")
 
 
 # --- CORS Configuration ---
-allowed_origins_regex = re.compile(r"https:\/\/the-guild-frontend.*\.vercel\.app")
 origins = [
     "http://localhost:3000",
     "https://the-guild-frontend.vercel.app",
-    allowed_origins_regex,
 ]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"https:\/\/the-guild-frontend-.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,7 +36,6 @@ app.add_middleware(
 
 # --- Custom OpenAPI Schema ---
 def custom_openapi():
-    # ... (This function remains the same as before)
     if app.openapi_schema:
         return app.openapi_schema
     openapi_schema = get_openapi(
@@ -71,7 +70,6 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(models.User.email == user.email).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
-
     hashed_password = auth.get_password_hash(user.password)
     db_user = models.User(
         email=user.email,
@@ -79,7 +77,6 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
         title=user.title,
         photo_url=user.photo_url,
         hashed_password=hashed_password,
-        # The 'role' defaults to 'Member' in the database, so we don't set it here
     )
     db.add(db_user)
     db.commit()
@@ -87,7 +84,6 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     return db_user
 
 
-# --- THIS ENDPOINT IS NOW UPGRADED TO INCLUDE ROLE IN THE TOKEN ---
 @app.post("/auth/login", response_model=schemas.Token, tags=["Authentication"])
 async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)
@@ -103,7 +99,6 @@ async def login_for_access_token(
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    # Include the user's role in the token payload
     access_token_data = {"sub": user.email, "role": user.role.value}
     access_token = auth.create_access_token(data=access_token_data)
     return {"access_token": access_token, "token_type": "bearer"}
@@ -120,7 +115,6 @@ def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
     return current_user
 
 
-# ... (read_users, read_skills, read_missions, etc. remain public and unchanged)
 @app.get("/users/", response_model=List[schemas.User], tags=["Public"])
 def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return db.query(models.User).offset(skip).limit(limit).all()
@@ -179,39 +173,7 @@ def read_pitches_for_mission(mission_id: uuid.UUID, db: Session = Depends(get_db
     )
 
 
-# --- Secured Endpoints with RBAC ---
-
-
-# --- THIS ENDPOINT IS NOW PROTECTED BY ROLE ---
-@app.post(
-    "/missions/",
-    response_model=schemas.Mission,
-    status_code=status.HTTP_201_CREATED,
-    tags=["Missions", "security"],
-)
-def create_mission(
-    mission: schemas.MissionCreate,
-    db: Session = Depends(get_db),
-    # We are now using the stricter dependency that checks for Manager or Admin role.
-    current_user: models.User = Depends(auth.get_current_manager_user),
-):
-    mission_data = mission.model_dump(exclude={"roles"})
-    db_mission = models.Mission(**mission_data, lead_user_id=current_user.id)
-    for role_data in mission.roles:
-        db_role = models.MissionRole(**role_data.model_dump(), mission=db_mission)
-        db.add(db_role)
-    db.add(db_mission)
-    db.commit()
-    db.refresh(db_mission)
-    return db_mission
-
-
-# We will secure the other POST/PATCH endpoints in a similar way later.
-# For now, create_mission is the primary one to protect.
-
-
-# The other endpoints remain as they were for now.
-# (Full code for pitch, draft, create_skill omitted for brevity but should be in your file)
+# --- Secured Endpoints ---
 @app.post(
     "/skills/",
     response_model=schemas.Skill,
@@ -231,6 +193,57 @@ def create_skill(
 
 
 @app.post(
+    "/missions/",
+    response_model=schemas.Mission,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Missions", "security"],
+)
+def create_mission(
+    mission: schemas.MissionCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_manager_user),
+):
+    mission_data = mission.model_dump(exclude={"roles"})
+    db_mission = models.Mission(**mission_data, lead_user_id=current_user.id)
+    for role_data in mission.roles:
+        db_role = models.MissionRole(**role_data.model_dump(), mission=db_mission)
+        db.add(db_role)
+    db.add(db_mission)
+    db.commit()
+    db.refresh(db_mission)
+    return db_mission
+
+
+@app.patch(
+    "/missions/{mission_id}/status",
+    response_model=schemas.Mission,
+    tags=["Missions", "security"],
+)
+def update_mission_status(
+    mission_id: uuid.UUID,
+    status_update: schemas.MissionUpdateStatus,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    db_mission = (
+        db.query(models.Mission).filter(models.Mission.id == mission_id).first()
+    )
+    if not db_mission:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Mission not found"
+        )
+    if db_mission.lead_user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the mission lead can change the status",
+        )
+    db_mission.status = status_update.status
+    db.commit()
+    db.refresh(db_mission)
+    return db_mission
+
+
+@app.post(
     "/mission-roles/{role_id}/draft",
     response_model=schemas.MissionRole,
     tags=["Workflow", "security"],
@@ -241,12 +254,21 @@ def draft_user_for_role(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    # This endpoint should also be further secured to check if current_user is the mission lead
     db_role = (
         db.query(models.MissionRole).filter(models.MissionRole.id == role_id).first()
     )
     if not db_role:
         raise HTTPException(status_code=404, detail="Mission role not found")
+    # Add security check: only mission lead can draft
+    mission = (
+        db.query(models.Mission).filter(models.Mission.id == db_role.mission_id).first()
+    )
+    if not mission or mission.lead_user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the mission lead can draft members.",
+        )
+
     db_user = (
         db.query(models.User)
         .filter(models.User.id == draft_info.assignee_user_id)
@@ -291,3 +313,13 @@ def pitch_for_mission(
             status_code=status.HTTP_409_CONFLICT,
             detail="You have already pitched for this mission.",
         )
+
+
+from fastapi.routing import APIRoute
+
+# This will run once when the server starts up.
+print("\n--- CURRENTLY REGISTERED ROUTES ---")
+for route in app.routes:
+    if isinstance(route, APIRoute):
+        print(f"Path: {route.path}, Name: {route.name}, Methods: {route.methods}")
+print("-----------------------------------\n")
