@@ -1,6 +1,6 @@
-# app/main.py (Complete, with PATCH endpoint)
+# app/main.py (FINAL, COMPLETE V1)
 
-from fastapi import FastAPI, Depends, HTTPException, status, Security
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.openapi.utils import get_openapi
@@ -23,7 +23,6 @@ origins = [
     "http://localhost:3000",
     "https://the-guild-frontend.vercel.app",
 ]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -72,11 +71,7 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email already registered")
     hashed_password = auth.get_password_hash(user.password)
     db_user = models.User(
-        email=user.email,
-        name=user.name,
-        title=user.title,
-        photo_url=user.photo_url,
-        hashed_password=hashed_password,
+        **user.model_dump(exclude={"password"}), hashed_password=hashed_password
     )
     db.add(db_user)
     db.commit()
@@ -104,10 +99,16 @@ async def login_for_access_token(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-# --- Root & Public Endpoints ---
+# --- Root Endpoint ---
 @app.get("/", tags=["Public"])
 def read_root():
     return {"message": "Welcome to The Guild API"}
+
+
+# --- User Endpoints ---
+@app.get("/users/", response_model=List[schemas.User], tags=["Public"])
+def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return db.query(models.User).offset(skip).limit(limit).all()
 
 
 @app.get("/users/me", response_model=schemas.User, tags=["Users", "security"])
@@ -115,16 +116,82 @@ def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
     return current_user
 
 
-@app.get("/users/", response_model=List[schemas.User], tags=["Public"])
-def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return db.query(models.User).offset(skip).limit(limit).all()
+@app.post("/users/me/skills", response_model=schemas.User, tags=["Users", "security"])
+def add_skill_to_current_user(
+    user_skill: schemas.UserSkillCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    db_user_skill = (
+        db.query(models.UserSkill)
+        .filter(
+            models.UserSkill.user_id == current_user.id,
+            models.UserSkill.skill_id == user_skill.skill_id,
+        )
+        .first()
+    )
+    if db_user_skill:
+        db_user_skill.proficiency = user_skill.proficiency
+    else:
+        db_user_skill = models.UserSkill(
+            **user_skill.model_dump(), user_id=current_user.id
+        )
+        db.add(db_user_skill)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
 
 
+@app.delete(
+    "/users/me/skills/{skill_id}",
+    response_model=schemas.User,
+    tags=["Users", "security"],
+)
+def remove_skill_from_current_user(
+    skill_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    db_user_skill = (
+        db.query(models.UserSkill)
+        .filter(
+            models.UserSkill.user_id == current_user.id,
+            models.UserSkill.skill_id == skill_id,
+        )
+        .first()
+    )
+    if db_user_skill:
+        db.delete(db_user_skill)
+        db.commit()
+    db.refresh(current_user)
+    return current_user
+
+
+# --- Skill Endpoints ---
 @app.get("/skills/", response_model=List[schemas.Skill], tags=["Public"])
 def read_skills(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return db.query(models.Skill).offset(skip).limit(limit).all()
 
 
+@app.post(
+    "/skills/",
+    response_model=schemas.Skill,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Skills", "security"],
+)
+def create_skill(
+    skill: schemas.SkillCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    db_skill = models.Skill(**skill.model_dump())
+    db.add(db_skill)
+    db.commit()
+    db.refresh(db_skill)
+    return db_skill
+
+
+# --- Mission Endpoints ---
 @app.get("/missions/", response_model=List[schemas.Mission], tags=["Public"])
 def read_missions(db: Session = Depends(get_db)):
     return (
@@ -159,39 +226,6 @@ def read_mission(mission_id: uuid.UUID, db: Session = Depends(get_db)):
     return mission
 
 
-@app.get(
-    "/missions/{mission_id}/pitches",
-    response_model=List[schemas.MissionPitch],
-    tags=["Public"],
-)
-def read_pitches_for_mission(mission_id: uuid.UUID, db: Session = Depends(get_db)):
-    return (
-        db.query(models.MissionPitch)
-        .options(joinedload(models.MissionPitch.user))
-        .filter(models.MissionPitch.mission_id == mission_id)
-        .all()
-    )
-
-
-# --- Secured Endpoints ---
-@app.post(
-    "/skills/",
-    response_model=schemas.Skill,
-    status_code=status.HTTP_201_CREATED,
-    tags=["Skills", "security"],
-)
-def create_skill(
-    skill: schemas.SkillCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    db_skill = models.Skill(**skill.model_dump())
-    db.add(db_skill)
-    db.commit()
-    db.refresh(db_skill)
-    return db_skill
-
-
 @app.post(
     "/missions/",
     response_model=schemas.Mission,
@@ -206,8 +240,7 @@ def create_mission(
     mission_data = mission.model_dump(exclude={"roles"})
     db_mission = models.Mission(**mission_data, lead_user_id=current_user.id)
     for role_data in mission.roles:
-        db_role = models.MissionRole(**role_data.model_dump(), mission=db_mission)
-        db.add(db_role)
+        db.add(models.MissionRole(**role_data.model_dump(), mission=db_mission))
     db.add(db_mission)
     db.commit()
     db.refresh(db_mission)
@@ -243,6 +276,20 @@ def update_mission_status(
     return db_mission
 
 
+@app.get(
+    "/missions/{mission_id}/pitches",
+    response_model=List[schemas.MissionPitch],
+    tags=["Public"],
+)
+def read_pitches_for_mission(mission_id: uuid.UUID, db: Session = Depends(get_db)):
+    return (
+        db.query(models.MissionPitch)
+        .options(joinedload(models.MissionPitch.user))
+        .filter(models.MissionPitch.mission_id == mission_id)
+        .all()
+    )
+
+
 @app.post(
     "/mission-roles/{role_id}/draft",
     response_model=schemas.MissionRole,
@@ -259,7 +306,6 @@ def draft_user_for_role(
     )
     if not db_role:
         raise HTTPException(status_code=404, detail="Mission role not found")
-    # Add security check: only mission lead can draft
     mission = (
         db.query(models.Mission).filter(models.Mission.id == db_role.mission_id).first()
     )
@@ -268,7 +314,6 @@ def draft_user_for_role(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the mission lead can draft members.",
         )
-
     db_user = (
         db.query(models.User)
         .filter(models.User.id == draft_info.assignee_user_id)
@@ -313,13 +358,3 @@ def pitch_for_mission(
             status_code=status.HTTP_409_CONFLICT,
             detail="You have already pitched for this mission.",
         )
-
-
-from fastapi.routing import APIRoute
-
-# This will run once when the server starts up.
-print("\n--- CURRENTLY REGISTERED ROUTES ---")
-for route in app.routes:
-    if isinstance(route, APIRoute):
-        print(f"Path: {route.path}, Name: {route.name}, Methods: {route.methods}")
-print("-----------------------------------\n")

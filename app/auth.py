@@ -1,4 +1,4 @@
-# app/auth.py (Upgraded for RBAC)
+# app/auth.py (Updated for Skill Ledger)
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -6,18 +6,18 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from . import schemas, models
 from .database import get_db
 from .config import settings
 
-# --- Security Configuration (No changes here) ---
+# --- Security Configuration ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 
-# --- Core Auth Functions (One key change in create_access_token) ---
+# --- Core Auth Functions ---
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -45,8 +45,21 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 
+# --- THIS FUNCTION IS NOW UPGRADED ---
 def get_user(db: Session, email: str) -> Optional[models.User]:
-    return db.query(models.User).filter(models.User.email == email).first()
+    """
+    Fetches a user from the database by their email,
+    eagerly loading their skills and skill details in the same query.
+    """
+    return (
+        db.query(models.User)
+        .options(joinedload(models.User.skills).joinedload(models.UserSkill.skill))
+        .filter(models.User.email == email)
+        .first()
+    )
+
+
+# ------------------------------------
 
 
 # --- RBAC Security Dependencies ---
@@ -56,8 +69,7 @@ async def get_current_user(
     token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
 ) -> models.User:
     """
-    Decodes the token, validates the user, and returns the user object.
-    This is the base dependency for all authenticated users.
+    Decodes the token, validates the user, and returns the complete user object.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -69,7 +81,7 @@ async def get_current_user(
             token, settings.secret_key, algorithms=[settings.algorithm]
         )
         email: Optional[str] = payload.get("sub")
-        role: Optional[str] = payload.get("role")  # <-- 1. Extract role from token
+        role: Optional[str] = payload.get("role")
         if email is None or role is None:
             raise credentials_exception
         token_data = schemas.TokenData(email=email, role=role)
@@ -82,14 +94,10 @@ async def get_current_user(
     return user
 
 
-# --- NEW: Stricter Dependencies for Specific Roles ---
 async def get_current_manager_user(
     current_user: models.User = Depends(get_current_user),
 ) -> models.User:
-    """
-    Dependency that ensures the user is a 'Manager' or 'Admin'.
-    Raises a 403 Forbidden error if they are just a 'Member'.
-    """
+    """Dependency that ensures the user is a 'Manager' or 'Admin'."""
     if current_user.role not in [
         models.UserRoleEnum.Manager,
         models.UserRoleEnum.Admin,
@@ -104,16 +112,10 @@ async def get_current_manager_user(
 async def get_current_admin_user(
     current_user: models.User = Depends(get_current_user),
 ) -> models.User:
-    """
-    The strictest dependency. Ensures the user is an 'Admin'.
-    Raises a 403 Forbidden error otherwise.
-    """
+    """Dependency that ensures the user is an 'Admin'."""
     if current_user.role != models.UserRoleEnum.Admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Operation not permitted. Requires Admin role.",
         )
     return current_user
-
-
-# --------------------------------------------------------

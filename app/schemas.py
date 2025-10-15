@@ -1,4 +1,4 @@
-# app/schemas.py (FINAL, COMPLETE VERSION)
+# app/schemas.py (FINAL, COMPLETE VERSION with Skill Ledger)
 
 import uuid
 from datetime import datetime
@@ -35,6 +35,17 @@ class Skill(SkillBase):
         pass
 
 
+# --- NEW: Schema for the User-Skill relationship (used in User profile) ---
+class UserSkill(BaseModel):
+    skill: Skill
+    proficiency: SkillProficiencyEnum
+
+    class Config(Config):
+        pass
+
+
+# ----------------------------------------------------
+
 # ------------------- User Schemas -------------------
 
 
@@ -52,10 +63,19 @@ class UserCreate(UserBase):
 class User(UserBase):
     id: uuid.UUID
     role: UserRoleEnum
+    skills: List[UserSkill] = []  # <-- UPDATED: User profile now includes skills
 
     class Config(Config):
         pass
 
+
+# --- NEW: Schema for adding/updating a skill for a user ---
+class UserSkillCreate(BaseModel):
+    skill_id: uuid.UUID
+    proficiency: SkillProficiencyEnum
+
+
+# --------------------------------------------------------
 
 # ------------------- MissionRole Schemas -------------------
 
@@ -97,12 +117,8 @@ class MissionCreate(MissionBase):
     roles: List[MissionRoleBase] = []
 
 
-# --- THIS IS THE NEWLY ADDED SCHEMA FOR DRAG-AND-DROP ---
 class MissionUpdateStatus(BaseModel):
     status: MissionStatusEnum
-
-
-# ----------------------------------------------------
 
 
 class Mission(MissionBase):
