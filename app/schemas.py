@@ -1,9 +1,10 @@
-# app/schemas.py (FINAL, COMPLETE VERSION with Skill Ledger)
+# app/schemas.py (FINAL - All Phase 1 Features)
 
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from decimal import Decimal
 
 from .models import (
     SkillProficiencyEnum,
@@ -17,7 +18,19 @@ class Config:
     from_attributes = True
 
 
-# ------------------- Skill Schemas -------------------
+# --- NANO: THIS IS THE MISSING NOTIFICATION SCHEMA ---
+class Notification(BaseModel):
+    id: uuid.UUID
+    message: str
+    link: Optional[str] = None
+    is_read: bool
+    created_at: datetime
+
+    class Config(Config):
+        pass
+
+
+# --------------------------------------------------
 
 
 class SkillBase(BaseModel):
@@ -35,7 +48,6 @@ class Skill(SkillBase):
         pass
 
 
-# --- NEW: Schema for the User-Skill relationship (used in User profile) ---
 class UserSkill(BaseModel):
     skill: Skill
     proficiency: SkillProficiencyEnum
@@ -44,9 +56,18 @@ class UserSkill(BaseModel):
         pass
 
 
-# ----------------------------------------------------
+# --- NANO: THIS SCHEMA IS ALSO REQUIRED FOR THE LIVING PROFILE ---
+class MissionHistoryItem(BaseModel):
+    mission_id: uuid.UUID
+    mission_title: str
+    role: str
+    status: MissionStatusEnum
 
-# ------------------- User Schemas -------------------
+    class Config(Config):
+        pass
+
+
+# -------------------------------------------------------------
 
 
 class UserBase(BaseModel):
@@ -63,21 +84,17 @@ class UserCreate(UserBase):
 class User(UserBase):
     id: uuid.UUID
     role: UserRoleEnum
-    skills: List[UserSkill] = []  # <-- UPDATED: User profile now includes skills
+    skills: List[UserSkill] = []
+    # NANO: THIS FIELD IS ALSO REQUIRED
+    mission_history: List[MissionHistoryItem] = []
 
     class Config(Config):
         pass
 
 
-# --- NEW: Schema for adding/updating a skill for a user ---
 class UserSkillCreate(BaseModel):
     skill_id: uuid.UUID
     proficiency: SkillProficiencyEnum
-
-
-# --------------------------------------------------------
-
-# ------------------- MissionRole Schemas -------------------
 
 
 class MissionRoleBase(BaseModel):
@@ -87,7 +104,7 @@ class MissionRoleBase(BaseModel):
 
 
 class MissionRoleCreate(MissionRoleBase):
-    mission_id: uuid.UUID
+    pass
 
 
 class MissionRoleUpdate(BaseModel):
@@ -104,13 +121,13 @@ class MissionRole(MissionRoleBase):
         pass
 
 
-# ------------------- Mission Schemas -------------------
-
-
 class MissionBase(BaseModel):
     title: str
     description: Optional[str] = None
     status: MissionStatusEnum = MissionStatusEnum.Proposed
+    budget: Optional[Decimal] = Field(None, ge=0)
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
 
 
 class MissionCreate(MissionBase):
@@ -132,15 +149,16 @@ class Mission(MissionBase):
         pass
 
 
-# ------------------- MissionPitch Schemas -------------------
-
-
 class MissionPitchBase(BaseModel):
     pitch_text: str
 
 
 class MissionPitchCreate(MissionPitchBase):
-    user_id: uuid.UUID
+    pass
+
+
+class MissionPitchUpdateStatus(BaseModel):
+    status: PitchStatusEnum
 
 
 class MissionPitch(MissionPitchBase):
@@ -152,9 +170,6 @@ class MissionPitch(MissionPitchBase):
 
     class Config(Config):
         pass
-
-
-# ------------------- Token Schemas -------------------
 
 
 class Token(BaseModel):
