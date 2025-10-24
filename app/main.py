@@ -1,4 +1,4 @@
-# app/main.py (FINAL - All Phase 1 Features)
+# app/main.py (Definitive Final Version)
 
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,13 +19,10 @@ from .database import get_db, engine
 models.Base.metadata.create_all(bind=engine)
 
 limiter = Limiter(key_func=get_remote_address)
-
 app = FastAPI(title="The Guild API", version="0.1.0")
-
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# --- CORS Configuration ---
 origins = [
     "http://localhost:3000",
     "https://the-guild-frontend.vercel.app",
@@ -40,7 +37,6 @@ app.add_middleware(
 )
 
 
-# --- Custom OpenAPI Schema ---
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -124,13 +120,7 @@ def read_root():
     response_model=List[schemas.Notification],
     tags=["Notifications", "security"],
 )
-def get_my_notifications(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """
-    Retrieves all notifications for the currently authenticated user.
-    """
+def get_my_notifications(current_user: models.User = Depends(auth.get_current_user)):
     return current_user.notifications
 
 
@@ -144,39 +134,25 @@ def mark_notification_as_read(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    """
-    Marks a specific notification as read.
-    """
     db_notification = (
         db.query(models.Notification)
         .filter(models.Notification.id == notification_id)
         .first()
     )
-
-    if not db_notification:
-        raise HTTPException(status_code=404, detail="Notification not found")
-
-    if db_notification.user_id != current_user.id:
+    if not db_notification or db_notification.user_id != current_user.id:
         raise HTTPException(
-            status_code=403, detail="Not authorized to mark this notification as read"
+            status_code=404, detail="Notification not found or not authorized"
         )
-
     db_notification.is_read = True
     db.commit()
     db.refresh(db_notification)
     return db_notification
 
 
-# --- User Endpoints ---
+# --- User & Talent Endpoints ---
 @app.get("/users/", response_model=List[schemas.User], tags=["Public"])
 def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return (
-        db.query(models.User)
-        .options(joinedload(models.User.skills).joinedload(models.UserSkill.skill))
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    return db.query(models.User).offset(skip).limit(limit).all()
 
 
 @app.get("/users/search", response_model=List[schemas.User], tags=["Users", "security"])
@@ -192,7 +168,7 @@ def search_users_by_skill(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid proficiency level")
     valid_proficiencies = proficiency_hierarchy[required_index:]
-    users = (
+    return (
         db.query(models.User)
         .join(models.User.skills)
         .join(models.UserSkill.skill)
@@ -203,15 +179,16 @@ def search_users_by_skill(
         .options(joinedload(models.User.skills).joinedload(models.UserSkill.skill))
         .all()
     )
-    return users
 
 
-@app.get("/users/me", response_model=schemas.User, tags=["Users", "security"])
+@app.get("/users/me", response_model=schemas.UserProfile, tags=["Users", "security"])
 def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
     return current_user
 
 
-@app.post("/users/me/skills", response_model=schemas.User, tags=["Users", "security"])
+@app.post(
+    "/users/me/skills", response_model=schemas.UserProfile, tags=["Users", "security"]
+)
 def add_skill_to_current_user(
     user_skill: schemas.UserSkillCreate,
     db: Session = Depends(get_db),
@@ -239,7 +216,7 @@ def add_skill_to_current_user(
 
 @app.delete(
     "/users/me/skills/{skill_id}",
-    response_model=schemas.User,
+    response_model=schemas.UserProfile,
     tags=["Users", "security"],
 )
 def remove_skill_from_current_user(
@@ -297,9 +274,45 @@ def read_missions(db: Session = Depends(get_db)):
             joinedload(models.Mission.roles).joinedload(
                 models.MissionRole.required_skill
             ),
+            joinedload(models.Mission.pitches).joinedload(models.MissionPitch.user),
         )
         .all()
     )
+
+
+@app.get(
+    "/missions/action-items",
+    response_model=List[schemas.MissionActionItem],
+    tags=["Missions", "security"],
+)
+def get_missions_with_pending_pitches(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_manager_user),
+):
+    missions = (
+        db.query(models.Mission)
+        .join(models.Mission.pitches)
+        .filter(
+            models.Mission.lead_user_id == current_user.id,
+            models.MissionPitch.status == models.PitchStatusEnum.Submitted,
+        )
+        .options(joinedload(models.Mission.lead))
+        .distinct()
+        .all()
+    )
+    result = []
+    for mission in missions:
+        pending_count = sum(
+            1
+            for pitch in mission.pitches
+            if pitch.status == models.PitchStatusEnum.Submitted
+        )
+        mission_action_item = schemas.MissionActionItem.model_validate(
+            mission, from_attributes=True
+        )
+        mission_action_item.pending_pitches = pending_count
+        result.append(mission_action_item)
+    return result
 
 
 @app.get("/missions/{mission_id}", response_model=schemas.Mission, tags=["Public"])
@@ -312,6 +325,7 @@ def read_mission(mission_id: uuid.UUID, db: Session = Depends(get_db)):
             joinedload(models.Mission.roles).joinedload(
                 models.MissionRole.required_skill
             ),
+            joinedload(models.Mission.pitches).joinedload(models.MissionPitch.user),
         )
         .filter(models.Mission.id == mission_id)
         .first()
@@ -335,14 +349,11 @@ def create_mission(
     mission_data = mission.model_dump(exclude={"roles"})
     db_mission = models.Mission(**mission_data, lead_user_id=current_user.id)
     db.add(db_mission)
-    # Must commit here so db_mission gets an ID
     db.commit()
     db.refresh(db_mission)
-
     for role_data in mission.roles:
         db_role = models.MissionRole(**role_data.model_dump(), mission_id=db_mission.id)
         db.add(db_role)
-
     db.commit()
     db.refresh(db_mission)
     return db_mission
@@ -360,14 +371,23 @@ def update_mission_status(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     db_mission = (
-        db.query(models.Mission).filter(models.Mission.id == mission_id).first()
+        db.query(models.Mission)
+        .options(
+            joinedload(models.Mission.lead),
+            joinedload(models.Mission.roles).joinedload(models.MissionRole.assignee),
+            joinedload(models.Mission.roles).joinedload(
+                models.MissionRole.required_skill
+            ),
+            joinedload(models.Mission.pitches).joinedload(models.MissionPitch.user),
+        )
+        .filter(models.Mission.id == mission_id)
+        .first()
     )
     if not db_mission:
         raise HTTPException(status_code=404, detail="Mission not found")
     if db_mission.lead_user_id != current_user.id:
         raise HTTPException(
-            status_code=403,
-            detail="Only the mission lead can change the status",
+            status_code=403, detail="Only the mission lead can change the status"
         )
     db_mission.status = status_update.status
     db.commit()
@@ -375,10 +395,11 @@ def update_mission_status(
     return db_mission
 
 
+# --- Workflow Endpoints (Pitches, Invites) ---
 @app.get(
     "/missions/{mission_id}/pitches",
     response_model=List[schemas.MissionPitch],
-    tags=["Public"],
+    tags=["Workflow", "security"],
 )
 def read_pitches_for_mission(mission_id: uuid.UUID, db: Session = Depends(get_db)):
     return (
@@ -409,18 +430,14 @@ def pitch_for_mission(
     )
     if not db_mission:
         raise HTTPException(status_code=404, detail="Mission not found")
-
     db_pitch = models.MissionPitch(
         **pitch.model_dump(), mission_id=mission_id, user_id=current_user.id
     )
-
-    # Create notification for the mission lead
     notification = models.Notification(
         user_id=db_mission.lead_user_id,
         message=f"'{current_user.name}' has pitched for your mission: '{db_mission.title}'.",
         link=f"/missions/{mission_id}",
     )
-
     db.add(db_pitch)
     db.add(notification)
     try:
@@ -430,8 +447,7 @@ def pitch_for_mission(
     except IntegrityError:
         db.rollback()
         raise HTTPException(
-            status_code=409,
-            detail="You have already pitched for this mission.",
+            status_code=409, detail="You have already pitched for this mission."
         )
 
 
@@ -455,19 +471,9 @@ def update_pitch_status(
         .filter(models.MissionPitch.id == pitch_id)
         .first()
     )
-
-    if not db_pitch:
-        raise HTTPException(status_code=404, detail="Pitch not found")
-
-    if db_pitch.mission.lead_user_id != current_user.id:
-        raise HTTPException(
-            status_code=403,
-            detail="Only the mission lead can update pitch status.",
-        )
-
+    if not db_pitch or db_pitch.mission.lead_user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Pitch not found or not authorized")
     db_pitch.status = status_update.status
-
-    # Create notification for the user who pitched
     status_text = (
         "accepted"
         if status_update.status == models.PitchStatusEnum.Accepted
@@ -479,7 +485,6 @@ def update_pitch_status(
         link=f"/missions/{db_pitch.mission_id}",
     )
     db.add(notification)
-
     db.commit()
     db.refresh(db_pitch)
     return db_pitch
@@ -506,8 +511,7 @@ def draft_user_for_role(
     )
     if not mission or mission.lead_user_id != current_user.id:
         raise HTTPException(
-            status_code=403,
-            detail="Only the mission lead can draft members.",
+            status_code=403, detail="Only the mission lead can draft members."
         )
     db_user = (
         db.query(models.User)
@@ -517,15 +521,170 @@ def draft_user_for_role(
     if not db_user:
         raise HTTPException(status_code=404, detail="User to be drafted not found")
     db_role.assignee_user_id = draft_info.assignee_user_id
-
-    # Create notification for the drafted user
     notification = models.Notification(
         user_id=draft_info.assignee_user_id,
         message=f"You have been drafted for the role '{db_role.role_description}' in the mission: '{mission.title}'.",
         link=f"/missions/{mission.id}",
     )
     db.add(notification)
-
     db.commit()
     db.refresh(db_role)
     return db_role
+
+
+@app.get(
+    "/invites/me",
+    response_model=List[schemas.MissionInvite],
+    tags=["Invitations", "security"],
+)
+def get_my_invitations(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    return (
+        db.query(models.MissionInvite)
+        .options(
+            joinedload(models.MissionInvite.mission_role).joinedload(
+                models.MissionRole.mission
+            ),
+            joinedload(models.MissionInvite.inviting_user),
+            joinedload(models.MissionInvite.mission_role).joinedload(
+                models.MissionRole.required_skill
+            ),
+        )
+        .filter(
+            models.MissionInvite.invited_user_id == current_user.id,
+            models.MissionInvite.status == models.InviteStatusEnum.Pending,
+        )
+        .order_by(models.MissionInvite.created_at.desc())
+        .all()
+    )
+
+
+@app.post(
+    "/invites",
+    response_model=schemas.MissionInvite,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Invitations", "security"],
+)
+def create_invite(
+    invite_data: schemas.MissionInviteCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_manager_user),
+):
+    db_role = (
+        db.query(models.MissionRole)
+        .options(joinedload(models.MissionRole.mission))
+        .filter(models.MissionRole.id == invite_data.mission_role_id)
+        .first()
+    )
+    if not db_role:
+        raise HTTPException(status_code=404, detail="Mission role not found")
+    if db_role.mission.lead_user_id != current_user.id:
+        raise HTTPException(
+            status_code=403, detail="You are not the lead of this mission"
+        )
+    if db_role.assignee_user_id:
+        raise HTTPException(status_code=400, detail="This role is already filled")
+    db_invited_user = (
+        db.query(models.User)
+        .filter(models.User.id == invite_data.invited_user_id)
+        .first()
+    )
+    if not db_invited_user:
+        raise HTTPException(status_code=404, detail="User to be invited not found")
+    existing_invite = (
+        db.query(models.MissionInvite)
+        .filter(
+            models.MissionInvite.mission_role_id == invite_data.mission_role_id,
+            models.MissionInvite.invited_user_id == invite_data.invited_user_id,
+            models.MissionInvite.status == models.InviteStatusEnum.Pending,
+        )
+        .first()
+    )
+    if existing_invite:
+        raise HTTPException(
+            status_code=409,
+            detail="A pending invite for this user to this role already exists",
+        )
+    db_invite = models.MissionInvite(
+        mission_role_id=invite_data.mission_role_id,
+        invited_user_id=invite_data.invited_user_id,
+        inviting_user_id=current_user.id,
+    )
+    notification = models.Notification(
+        user_id=invite_data.invited_user_id,
+        message=f"'{current_user.name}' has invited you to join the mission '{db_role.mission.title}' as '{db_role.role_description}'.",
+        link=f"/invites",
+    )
+    db.add(db_invite)
+    db.add(notification)
+    db.commit()
+    db.refresh(db_invite)
+    return db_invite
+
+
+@app.patch(
+    "/invites/{invite_id}",
+    response_model=schemas.MissionInvite,
+    tags=["Invitations", "security"],
+)
+def respond_to_invite(
+    invite_id: uuid.UUID,
+    response_data: schemas.MissionInviteUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    db_invite = (
+        db.query(models.MissionInvite)
+        .options(
+            joinedload(models.MissionInvite.mission_role).joinedload(
+                models.MissionRole.mission
+            ),
+            joinedload(models.MissionInvite.inviting_user),
+        )
+        .filter(models.MissionInvite.id == invite_id)
+        .first()
+    )
+    if not db_invite or db_invite.invited_user_id != current_user.id:
+        raise HTTPException(
+            status_code=404, detail="Invite not found or you are not authorized"
+        )
+    if db_invite.status != models.InviteStatusEnum.Pending:
+        raise HTTPException(
+            status_code=400, detail="This invitation has already been responded to"
+        )
+    if response_data.status == models.InviteStatusEnum.Accepted:
+        if db_invite.mission_role.assignee_user_id:
+            db_invite.status = models.InviteStatusEnum.Declined
+            notification_msg = f"Your acceptance for '{db_invite.mission_role.mission.title}' could not be processed as the role was filled."
+            db.add(
+                models.Notification(user_id=current_user.id, message=notification_msg)
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=409, detail="This role has already been filled."
+            )
+        db_invite.mission_role.assignee_user_id = current_user.id
+        db_invite.status = models.InviteStatusEnum.Accepted
+        notification_msg = f"'{current_user.name}' has accepted your invitation to join '{db_invite.mission_role.mission.title}'."
+        db.add(
+            models.Notification(
+                user_id=db_invite.inviting_user_id,
+                message=notification_msg,
+                link=f"/missions/{db_invite.mission_role.mission_id}",
+            )
+        )
+    elif response_data.status == models.InviteStatusEnum.Declined:
+        db_invite.status = models.InviteStatusEnum.Declined
+        notification_msg = f"'{current_user.name}' has declined your invitation to join '{db_invite.mission_role.mission.title}'."
+        db.add(
+            models.Notification(
+                user_id=db_invite.inviting_user_id, message=notification_msg
+            )
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Invalid status update")
+    db.commit()
+    db.refresh(db_invite)
+    return db_invite

@@ -1,4 +1,4 @@
-# app/models.py (DEFINITIVE - Corrected with server_default for UUIDs)
+# app/models.py (Complete & Final with Invitation Protocol)
 
 import enum
 import uuid
@@ -46,8 +46,10 @@ class PitchStatusEnum(str, enum.Enum):
     Rejected = "Rejected"
 
 
-# --- NANO: CORRECTIVE ACTION - Using server_default for all UUID primary keys ---
-# This ensures PostgreSQL generates the UUID, making direct SQL INSERTs work.
+class InviteStatusEnum(str, enum.Enum):
+    Pending = "Pending"
+    Accepted = "Accepted"
+    Declined = "Declined"
 
 
 class Notification(Base):
@@ -66,6 +68,43 @@ class Notification(Base):
     is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
     recipient: Mapped["User"] = relationship("User", back_populates="notifications")
+
+
+class MissionInvite(Base):
+    __tablename__ = "mission_invites"
+    id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    mission_role_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("mission_roles.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    invited_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    inviting_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    status = Column(
+        Enum(InviteStatusEnum, name="invite_status"),
+        nullable=False,
+        default=InviteStatusEnum.Pending,
+    )
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    mission_role: Mapped["MissionRole"] = relationship(
+        "MissionRole", foreign_keys=[mission_role_id]
+    )
+    invited_user: Mapped["User"] = relationship(
+        "User", foreign_keys=[invited_user_id], back_populates="received_invites"
+    )
+    inviting_user: Mapped["User"] = relationship(
+        "User", foreign_keys=[inviting_user_id]
+    )
 
 
 class User(Base):
@@ -105,10 +144,17 @@ class User(Base):
         cascade="all, delete-orphan",
         order_by="Notification.created_at.desc()",
     )
+    received_invites: Mapped[List["MissionInvite"]] = relationship(
+        "MissionInvite",
+        foreign_keys=[MissionInvite.invited_user_id],
+        back_populates="invited_user",
+        cascade="all, delete-orphan",
+    )
 
     @property
     def mission_history(self):
         history = []
+        # Using the relationships to build the history
         for mission in self.led_missions:
             history.append(
                 {
@@ -119,14 +165,15 @@ class User(Base):
                 }
             )
         for role in self.assigned_roles:
-            history.append(
-                {
-                    "mission_id": role.mission.id,
-                    "mission_title": role.mission.title,
-                    "role": role.role_description,
-                    "status": role.mission.status,
-                }
-            )
+            if role.mission:  # Ensure the mission object is loaded
+                history.append(
+                    {
+                        "mission_id": role.mission.id,
+                        "mission_title": role.mission.title,
+                        "role": role.role_description,
+                        "status": role.mission.status,
+                    }
+                )
         return sorted(history, key=lambda x: x["mission_title"])
 
 
