@@ -1,4 +1,4 @@
-# app/main.py (Definitive Final Version)
+# app/main.py (Definitive Final Version with Two-Tiered Auth)
 
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -92,12 +92,10 @@ async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    user = auth.get_user(db, email=form_data.username)
-    if (
-        not user
-        or not user.hashed_password
-        or not auth.verify_password(form_data.password, user.hashed_password)
-    ):
+    user = auth.authenticate_user(
+        db, email=form_data.username, password=form_data.password
+    )
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -136,13 +134,14 @@ def mark_notification_as_read(
 ):
     db_notification = (
         db.query(models.Notification)
-        .filter(models.Notification.id == notification_id)
+        .filter(
+            models.Notification.id == notification_id,
+            models.Notification.user_id == current_user.id,
+        )
         .first()
     )
-    if not db_notification or db_notification.user_id != current_user.id:
-        raise HTTPException(
-            status_code=404, detail="Notification not found or not authorized"
-        )
+    if not db_notification:
+        raise HTTPException(status_code=404, detail="Notification not found")
     db_notification.is_read = True
     db.commit()
     db.refresh(db_notification)
@@ -155,7 +154,11 @@ def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return db.query(models.User).offset(skip).limit(limit).all()
 
 
-@app.get("/users/search", response_model=List[schemas.User], tags=["Users", "security"])
+@app.get(
+    "/users/search",
+    response_model=List[schemas.UserProfile],
+    tags=["Users", "security"],
+)
 def search_users_by_skill(
     skill_name: str,
     proficiency: models.SkillProficiencyEnum,
@@ -276,6 +279,7 @@ def read_missions(db: Session = Depends(get_db)):
             ),
             joinedload(models.Mission.pitches).joinedload(models.MissionPitch.user),
         )
+        .order_by(models.Mission.created_at.desc())
         .all()
     )
 
@@ -296,7 +300,7 @@ def get_missions_with_pending_pitches(
             models.Mission.lead_user_id == current_user.id,
             models.MissionPitch.status == models.PitchStatusEnum.Submitted,
         )
-        .options(joinedload(models.Mission.lead))
+        .options(joinedload(models.Mission.lead), joinedload(models.Mission.pitches))
         .distinct()
         .all()
     )
@@ -395,7 +399,7 @@ def update_mission_status(
     return db_mission
 
 
-# --- Workflow Endpoints (Pitches, Invites) ---
+# --- Workflow Endpoints ---
 @app.get(
     "/missions/{mission_id}/pitches",
     response_model=List[schemas.MissionPitch],
@@ -541,7 +545,7 @@ def get_my_invitations(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    return (
+    db_invites = (
         db.query(models.MissionInvite)
         .options(
             joinedload(models.MissionInvite.mission_role).joinedload(
@@ -559,6 +563,10 @@ def get_my_invitations(
         .order_by(models.MissionInvite.created_at.desc())
         .all()
     )
+    return [
+        schemas.MissionInvite.model_validate(invite, from_attributes=True)
+        for invite in db_invites
+    ]
 
 
 @app.post(

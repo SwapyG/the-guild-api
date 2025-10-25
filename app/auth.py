@@ -1,4 +1,4 @@
-# app/auth.py (Updated for Skill Ledger)
+# app/auth.py (Production Ready - Diagnostics Removed)
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -12,12 +12,8 @@ from . import schemas, models
 from .database import get_db
 from .config import settings
 
-# --- Security Configuration ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-
-# --- Core Auth Functions ---
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -36,41 +32,44 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         expire = datetime.now(timezone.utc) + timedelta(
             minutes=settings.access_token_expire_minutes
         )
-
     to_encode.update({"exp": expire})
-
-    encoded_jwt = jwt.encode(
-        to_encode, settings.secret_key, algorithm=settings.algorithm
-    )
-    return encoded_jwt
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 
 
-# --- THIS FUNCTION IS NOW UPGRADED ---
-def get_user(db: Session, email: str) -> Optional[models.User]:
+def authenticate_user(db: Session, email: str, password: str) -> Optional[models.User]:
     """
-    Fetches a user from the database by their email,
-    eagerly loading their skills and skill details in the same query.
+    Fetches a user by email (without extra data) and verifies their password.
+    Returns the user object on success, None on failure.
+    """
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user or not user.hashed_password:
+        return None
+    if not verify_password(password, user.hashed_password):
+        return None
+    return user
+
+
+def get_user_with_profile(db: Session, email: str) -> Optional[models.User]:
+    """
+    Fetches a user by email, eagerly loading all profile relationships.
     """
     return (
         db.query(models.User)
-        .options(joinedload(models.User.skills).joinedload(models.UserSkill.skill))
+        .options(
+            joinedload(models.User.skills).joinedload(models.UserSkill.skill),
+            joinedload(models.User.led_missions),
+            joinedload(models.User.assigned_roles).joinedload(
+                models.MissionRole.mission
+            ),
+        )
         .filter(models.User.email == email)
         .first()
     )
 
 
-# ------------------------------------
-
-
-# --- RBAC Security Dependencies ---
-
-
 async def get_current_user(
     token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
 ) -> models.User:
-    """
-    Decodes the token, validates the user, and returns the complete user object.
-    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -81,14 +80,12 @@ async def get_current_user(
             token, settings.secret_key, algorithms=[settings.algorithm]
         )
         email: Optional[str] = payload.get("sub")
-        role: Optional[str] = payload.get("role")
-        if email is None or role is None:
+        if email is None:
             raise credentials_exception
-        token_data = schemas.TokenData(email=email, role=role)
     except JWTError:
         raise credentials_exception
 
-    user = get_user(db, email=token_data.email)
+    user = get_user_with_profile(db, email=email)
     if user is None:
         raise credentials_exception
     return user
@@ -97,7 +94,6 @@ async def get_current_user(
 async def get_current_manager_user(
     current_user: models.User = Depends(get_current_user),
 ) -> models.User:
-    """Dependency that ensures the user is a 'Manager' or 'Admin'."""
     if current_user.role not in [
         models.UserRoleEnum.Manager,
         models.UserRoleEnum.Admin,
@@ -112,7 +108,6 @@ async def get_current_manager_user(
 async def get_current_admin_user(
     current_user: models.User = Depends(get_current_user),
 ) -> models.User:
-    """Dependency that ensures the user is an 'Admin'."""
     if current_user.role != models.UserRoleEnum.Admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
